@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Claude Code ダッシュボード</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel2: #1c2230; --border: #2a3038;
+    --text: #e6edf3; --muted: #8b949e; --dim: #6e7681;
+    --active: #3fb950; --idle: #d29922; --dormant: #6e7681;
+    --accent: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Hiragino Sans", "Helvetica Neue", Arial, sans-serif;
+    font-size: 14px; line-height: 1.5;
+  }
+  header {
+    position: sticky; top: 0; z-index: 10; background: rgba(13,17,23,.9);
+    backdrop-filter: blur(8px); border-bottom: 1px solid var(--border);
+    padding: 14px 22px; display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  }
+  h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: .2px; }
+  h1 .sat { margin-right: 7px; }
+  .stats { display: flex; gap: 10px; flex-wrap: wrap; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px;
+    border-radius: 999px; background: var(--panel); border: 1px solid var(--border);
+    font-variant-numeric: tabular-nums; font-size: 13px;
+  }
+  .pill b { font-weight: 700; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .dot.active { background: var(--active); box-shadow: 0 0 0 0 rgba(63,185,80,.6); animation: pulse 1.8s infinite; }
+  .dot.idle { background: var(--idle); }
+  .dot.dormant { background: var(--dormant); }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(63,185,80,.5)} 70%{box-shadow:0 0 0 7px rgba(63,185,80,0)} 100%{box-shadow:0 0 0 0 rgba(63,185,80,0)} }
+  .spacer { flex: 1; }
+  .meta { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 12px; }
+  .toggle { color: var(--muted); cursor: pointer; user-select: none; font-size: 12px; }
+  .toggle input { vertical-align: middle; margin-right: 4px; }
+
+  main { padding: 18px 22px 60px; }
+  .group-title { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin: 22px 4px 10px; display: flex; align-items: center; gap: 8px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 13px 15px; position: relative; overflow: hidden; transition: border-color .2s;
+  }
+  .card::before { content:''; position:absolute; left:0; top:0; bottom:0; width:3px; background: var(--dormant); }
+  .card.active::before { background: var(--active); }
+  .card.idle::before { background: var(--idle); }
+  .card:hover { border-color: #3d4654; }
+  .card-top { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+  .proj { font-weight: 650; color: var(--accent); font-size: 14px; word-break: break-all; }
+  .age { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .title { font-size: 13px; color: var(--text); margin-bottom: 7px; }
+  .title .label { color: var(--dim); }
+  .badges { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .badge { font-size: 11px; padding: 2px 7px; border-radius: 5px; background: var(--panel2); color: var(--muted); border: 1px solid var(--border); }
+  .badge.branch { color: #d2a8ff; }
+  .badge.model { color: #79c0ff; }
+  .badge.live { color: var(--active); border-color: rgba(63,185,80,.4); }
+  .badge.resumed { color: #ffa657; }
+  .prompt {
+    background: var(--panel2); border-radius: 6px; padding: 8px 10px; font-size: 12.5px;
+    color: var(--text); margin-bottom: 7px; border-left: 2px solid var(--accent);
+    max-height: 64px; overflow: hidden; white-space: pre-wrap; word-break: break-word;
+  }
+  .prompt .label, .last .label { color: var(--dim); font-size: 11px; display:block; margin-bottom:2px; }
+  .last {
+    font-size: 12px; color: var(--muted); white-space: pre-wrap; word-break: break-word;
+    max-height: 60px; overflow: hidden;
+  }
+  .last .role { color: var(--dim); }
+  .pathline { font-size: 11px; color: var(--dim); margin-top: 8px; word-break: break-all; }
+  .empty { color: var(--muted); text-align: center; padding: 40px; }
+  .err { background: #3d1d1d; border: 1px solid #8b3030; color: #ffb3b3; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; }
+  a { color: inherit; }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="sat">🛰</span>Claude Code ダッシュボード</h1>
+  <div class="stats" id="stats"></div>
+  <div class="spacer"></div>
+  <label class="toggle"><input type="checkbox" id="hideDormant" /> 休眠を隠す</label>
+  <div class="meta"><span id="updated">—</span></div>
+</header>
+<main>
+  <div id="err"></div>
+  <div id="content"></div>
+</main>
+
+<script>
+const REFRESH_MS = 3000;
+let hideDormant = false;
+
+const fmtAge = (ms) => {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + '秒前';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + '分前';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + '時間前';
+  return Math.floor(h / 24) + '日前';
+};
+const esc = (s) => String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const shortModel = (m) => m ? m.replace(/^claude-/, '').replace(/-\d{8}$/, '') : null;
+
+function card(s) {
+  const live = s.status === 'active';
+  const badges = [];
+  if (s.gitBranch) badges.push(`<span class="badge branch">⎇ ${esc(s.gitBranch)}</span>`);
+  if (s.model) badges.push(`<span class="badge model">${esc(shortModel(s.model))}</span>`);
+  if (s.messageCount != null) badges.push(`<span class="badge">${s.messageCount} msg</span>`);
+  if (s.resumed) badges.push(`<span class="badge resumed">▶ resumed</span>`);
+  if (live) badges.push(`<span class="badge live">● LIVE</span>`);
+
+  const projName = s.project.replace(/^-Users-[^-]+-/, '').replace(/^-/, '');
+  let html = `<div class="card ${s.status}">`;
+  html += `<div class="card-top"><span class="proj">${esc(projName)}</span><span class="age">${fmtAge(s.ageMs)}</span></div>`;
+  if (s.title) html += `<div class="title"><span class="label">タイトル: </span>${esc(s.title)}</div>`;
+  if (badges.length) html += `<div class="badges">${badges.join('')}</div>`;
+  if (s.lastPrompt) html += `<div class="prompt"><span class="label">最後の指示</span>${esc(s.lastPrompt)}</div>`;
+  if (s.lastText) html += `<div class="last"><span class="label">直近のやりとり (<span class="role">${esc(s.lastRole)}</span>)</span>${esc(s.lastText)}</div>`;
+  const p = s.cwd || s.projectPath;
+  if (p) html += `<div class="pathline">${esc(p)}</div>`;
+  html += `</div>`;
+  return html;
+}
+
+function groupBlock(label, dotClass, list) {
+  if (!list.length) return '';
+  return `<div class="group-title"><span class="dot ${dotClass}"></span>${label} <span style="color:var(--dim)">(${list.length})</span></div>`
+    + `<div class="grid">${list.map(card).join('')}</div>`;
+}
+
+async function tick() {
+  try {
+    const r = await fetch('/api/sessions');
+    const d = await r.json();
+    const errEl = document.getElementById('err');
+    errEl.innerHTML = d.error ? `<div class="err">${esc(d.error)}</div>` : '';
+
+    const c = d.counts || {};
+    document.getElementById('stats').innerHTML = [
+      `<span class="pill"><span class="dot active"></span>稼働中 <b>${c.active||0}</b></span>`,
+      `<span class="pill"><span class="dot idle"></span>待機中 <b>${c.idle||0}</b></span>`,
+      `<span class="pill"><span class="dot dormant"></span>休眠 <b>${c.dormant||0}</b></span>`,
+      `<span class="pill">⚙ プロセス <b>${c.processes||0}</b></span>`,
+    ].join('');
+
+    const sessions = d.sessions || [];
+    const active = sessions.filter(s => s.status === 'active');
+    const idle = sessions.filter(s => s.status === 'idle');
+    const dormant = sessions.filter(s => s.status === 'dormant');
+
+    let html = '';
+    html += groupBlock('稼働中', 'active', active);
+    html += groupBlock('待機中', 'idle', idle);
+    if (!hideDormant) html += groupBlock('休眠', 'dormant', dormant);
+    if (!html) html = '<div class="empty">セッションが見つかりません</div>';
+    document.getElementById('content').innerHTML = html;
+
+    const now = new Date();
+    document.getElementById('updated').textContent =
+      '更新 ' + now.toLocaleTimeString('ja-JP') + ` · 全${sessions.length}件`;
+  } catch (e) {
+    document.getElementById('err').innerHTML = `<div class="err">取得エラー: ${esc(e)}</div>`;
+  }
+}
+
+document.getElementById('hideDormant').addEventListener('change', (e) => {
+  hideDormant = e.target.checked; tick();
+});
+tick();
+setInterval(tick, REFRESH_MS);
+</script>
+</body>
+</html>
