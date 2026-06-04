@@ -7,7 +7,7 @@ import { promises as fs } from 'node:fs';
 import { readFileSync, statSync, openSync, readSync, closeSync, fstatSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 4317;
@@ -249,6 +249,62 @@ function buildSessionDetail(projectName, sessionId) {
   };
 }
 
+// ---- セッションの cwd を推定（送信時の作業ディレクトリ用） ----
+function getSessionCwd(projectName, sessionId) {
+  const full = path.join(PROJECTS_DIR, projectName, sessionId + '.jsonl');
+  try {
+    const { text } = readTail(full);
+    // 末尾→先頭の順で最後に現れた cwd を採用（途中で切れた行は parseLines が無視）
+    const entries = parseLines(text);
+    for (let i = entries.length - 1; i >= 0; i--) {
+      if (entries[i].cwd) return entries[i].cwd;
+    }
+    const head = parseLines(readHead(full));
+    for (let i = head.length - 1; i >= 0; i--) {
+      if (head[i].cwd) return head[i].cwd;
+    }
+  } catch { /* fallthrough */ }
+  return null;
+}
+
+// ---- 詳細画面からセッションへ指示を送る（claude --resume -p をヘッドレス起動） ----
+function sendToSession(projectName, sessionId, text) {
+  const full = path.join(PROJECTS_DIR, projectName, sessionId + '.jsonl');
+  let st;
+  try { st = statSync(full); } catch { return { error: 'セッションが見つかりません', code: 404 }; }
+
+  // 稼働中(active)への送信は対話TUIとの書き込み競合を招くため拒否
+  if (Date.now() - st.mtimeMs <= ACTIVE_MS) {
+    return { error: '稼働中のセッションには送信できません（対話プロセスと競合します）', code: 409 };
+  }
+
+  const cwd = getSessionCwd(projectName, sessionId) || decodeProjectDir(projectName);
+  // ヘッドレスで1ターン実行。同じ session jsonl に追記され、ポーリングで反映される。
+  const child = spawn('claude', ['--resume', sessionId, '-p', text], {
+    cwd,
+    detached: true,
+    stdio: 'ignore',
+    env: process.env,
+  });
+  child.on('error', (e) => { console.error('claude 起動失敗:', e.message); });
+  child.unref();
+  return { ok: true, cwd };
+}
+
+function readBody(req, maxBytes = 256 * 1024) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > maxBytes) { reject(new Error('リクエストが大きすぎます')); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+
 async function buildSnapshot() {
   let projectDirs = [];
   try {
@@ -329,6 +385,38 @@ const server = http.createServer(async (req, res) => {
       }
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify(detail));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(e) }));
+    }
+    return;
+  }
+  if (url.pathname === '/api/send' && req.method === 'POST') {
+    const project = url.searchParams.get('project');
+    const id = url.searchParams.get('id');
+    if (!project || !id || /[\/\\]/.test(project) || /[\/\\.]/.test(id)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'project と id が必要です' }));
+      return;
+    }
+    try {
+      const body = await readBody(req);
+      let text = '';
+      try { text = (JSON.parse(body).text || '').toString(); } catch {}
+      text = text.trim();
+      if (!text) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'text が空です' }));
+        return;
+      }
+      const result = sendToSession(project, id, text);
+      if (result.error) {
+        res.writeHead(result.code || 500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: result.error }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(result));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: String(e) }));

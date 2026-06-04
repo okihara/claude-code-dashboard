@@ -125,6 +125,27 @@
   .loading { color: var(--muted); text-align: center; padding: 40px; }
   .err { background: #3d1d1d; border: 1px solid #8b3030; color: #ffb3b3; padding: 12px 16px; border-radius: 8px; margin: 14px; }
   a { color: inherit; }
+
+  /* ===== 詳細: 入力欄（コンポーザ） ===== */
+  .composer { flex: 0 0 auto; border-top: 1px solid var(--border); background: var(--panel); padding: 10px 16px 12px; }
+  .composer .row { display: flex; gap: 8px; align-items: flex-end; }
+  .composer textarea {
+    flex: 1 1 auto; resize: none; min-height: 38px; max-height: 160px;
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 9px 11px; font: inherit; font-size: 13px; line-height: 1.4;
+  }
+  .composer textarea:focus { outline: none; border-color: var(--accent); }
+  .composer button {
+    flex: 0 0 auto; background: var(--accent); color: #06122a; border: none; cursor: pointer;
+    border-radius: 8px; padding: 9px 16px; font: inherit; font-weight: 650; font-size: 13px;
+  }
+  .composer button:hover { filter: brightness(1.08); }
+  .composer button:disabled { background: var(--panel2); color: var(--dim); cursor: not-allowed; }
+  .composer .hint { font-size: 11px; color: var(--dim); margin-top: 6px; min-height: 14px; }
+  .composer .hint.warn { color: var(--idle); }
+  .composer .hint.ok { color: var(--active); }
+  .composer .hint.bad { color: #ffb3b3; }
+  .composer.disabled textarea { opacity: .5; }
 </style>
 </head>
 <body>
@@ -160,6 +181,13 @@
     <div class="detail-body" id="mbody">
       <div class="placeholder"><div class="big">🛰</div>左のカードを選択すると<br>会話の詳細がここに表示されます</div>
     </div>
+    <div class="composer" id="composer" style="display:none">
+      <div class="row">
+        <textarea id="sendText" placeholder="このセッションに指示を送る…（Cmd/Ctrl+Enter で送信）" rows="1"></textarea>
+        <button id="sendBtn">送信</button>
+      </div>
+      <div class="hint" id="sendHint"></div>
+    </div>
   </section>
 </div>
 
@@ -167,6 +195,8 @@
 const REFRESH_MS = 3000;
 let hideDormant = false;
 let openDetail = null; // 詳細表示中の { project, id }
+const statusByKey = {}; // "project\nid" -> status（送信可否の判定用）
+const skey = (project, id) => project + '\n' + id;
 
 const fmtAge = (ms) => {
   const s = Math.floor(ms / 1000);
@@ -225,6 +255,8 @@ async function tick() {
     ].join('');
 
     const sessions = d.sessions || [];
+    for (const s of sessions) statusByKey[skey(s.project, s.sessionId)] = s.status;
+    if (openDetail) updateComposer();
     const active = sessions.filter(s => s.status === 'active');
     const idle = sessions.filter(s => s.status === 'idle');
     const dormant = sessions.filter(s => s.status === 'dormant');
@@ -274,6 +306,8 @@ async function showDetail(project, id, silent = false) {
   const body = document.getElementById('mbody');
   if (!silent) {
     head.style.display = '';
+    document.getElementById('composer').style.display = '';
+    updateComposer();
     document.getElementById('mtitle').textContent = '読み込み中…';
     document.getElementById('mbadges').innerHTML = '';
     document.getElementById('mpath').textContent = '';
@@ -310,6 +344,77 @@ async function showDetail(project, id, silent = false) {
     if (!silent) body.innerHTML = `<div class="err">取得エラー: ${esc(e)}</div>`;
   }
 }
+
+// ===== コンポーザ（指示送信） =====
+let sending = false;
+
+function updateComposer() {
+  const wrap = document.getElementById('composer');
+  const btn = document.getElementById('sendBtn');
+  const ta = document.getElementById('sendText');
+  const hint = document.getElementById('sendHint');
+  if (!openDetail) { wrap.style.display = 'none'; return; }
+  const status = statusByKey[skey(openDetail.project, openDetail.id)];
+  const isActive = status === 'active';
+  // 送信中の一時メッセージ表示中はヒントを上書きしない
+  if (sending) return;
+  if (isActive) {
+    wrap.classList.add('disabled');
+    btn.disabled = true; ta.disabled = true;
+    hint.className = 'hint warn';
+    hint.textContent = '🟢 稼働中のため送信できません（対話プロセスとの書き込み競合を防止）';
+  } else {
+    wrap.classList.remove('disabled');
+    btn.disabled = false; ta.disabled = false;
+    hint.className = 'hint';
+    hint.textContent = 'claude --resume をヘッドレス起動し、このセッションを1ターン進めます（トークンを消費します）';
+  }
+}
+
+async function sendMessage() {
+  if (!openDetail || sending) return;
+  const ta = document.getElementById('sendText');
+  const hint = document.getElementById('sendHint');
+  const text = ta.value.trim();
+  if (!text) return;
+  const { project, id } = openDetail;
+  sending = true;
+  document.getElementById('sendBtn').disabled = true;
+  hint.className = 'hint'; hint.textContent = '送信中…';
+  try {
+    const r = await fetch(`/api/send?project=${encodeURIComponent(project)}&id=${encodeURIComponent(id)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    const d = await r.json();
+    if (!r.ok || d.error) {
+      hint.className = 'hint bad'; hint.textContent = '送信失敗: ' + (d.error || r.status);
+    } else {
+      ta.value = '';
+      hint.className = 'hint ok'; hint.textContent = '✓ 送信しました。まもなく会話に反映されます…';
+      // 少し待ってから詳細を更新（jsonl 追記が間に合うように）
+      setTimeout(() => { if (openDetail && openDetail.project === project && openDetail.id === id) showDetail(project, id, true); }, 1500);
+    }
+  } catch (e) {
+    hint.className = 'hint bad'; hint.textContent = '送信失敗: ' + e;
+  } finally {
+    // ヒント文は結果表示を残し、ボタンだけ復帰させる（次の tick で updateComposer が整える）
+    sending = false;
+    const status = statusByKey[skey(project, id)];
+    document.getElementById('sendBtn').disabled = (status === 'active');
+  }
+}
+
+document.getElementById('sendBtn').addEventListener('click', sendMessage);
+document.getElementById('sendText').addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); sendMessage(); }
+});
+// テキストエリアの自動高さ調整
+document.getElementById('sendText').addEventListener('input', (e) => {
+  e.target.style.height = 'auto';
+  e.target.style.height = Math.min(e.target.scrollHeight, 160) + 'px';
+});
 
 tick();
 setInterval(tick, REFRESH_MS);
