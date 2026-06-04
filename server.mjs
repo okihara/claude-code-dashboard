@@ -76,6 +76,24 @@ function summarizeContent(msg) {
   return parts.join(' ').trim() || null;
 }
 
+// AskUserQuestion の回答待ちか判定する。
+// tool_use(name=AskUserQuestion) の id に対応する tool_result(tool_use_id) が
+// まだ現れていなければ「回答待ち」。現在の待ち状態は必ず末尾側にあるため
+// 末尾エントリ列で判定すれば足りる。
+function computeAwaitingInput(entries) {
+  const pending = new Set();
+  for (const e of entries) {
+    const m = e.message;
+    if (!m || typeof m !== 'object' || !Array.isArray(m.content)) continue;
+    for (const b of m.content) {
+      if (!b || typeof b !== 'object') continue;
+      if (b.type === 'tool_use' && b.name === 'AskUserQuestion' && b.id) pending.add(b.id);
+      else if (b.type === 'tool_result' && b.tool_use_id) pending.delete(b.tool_use_id);
+    }
+  }
+  return pending.size > 0;
+}
+
 function decodeProjectDir(name) {
   // "-Users-masa-work-plo-game" → "/Users/masa/work/plo-game" (推定表示用)
   return name.replace(/^-/, '/').replace(/-/g, '/');
@@ -134,6 +152,7 @@ function analyzeSession(projectName, file) {
     lastText: null,
     lastTimestamp: null,
     messageCount: null,
+    awaitingInput: false,
     detailed: false,
   };
 
@@ -173,6 +192,7 @@ function analyzeSession(projectName, file) {
     base.model = model;
     base.lastTimestamp = lastTs;
     base.messageCount = msgCount;
+    base.awaitingInput = computeAwaitingInput(entries);
     base.detailed = true;
     if (lastMsgEntry) {
       base.lastRole = lastMsgEntry.message.role;
@@ -245,6 +265,7 @@ function buildSessionDetail(projectName, sessionId) {
   return {
     sessionId, project: projectName, projectPath: decodeProjectDir(projectName),
     title, cwd, gitBranch: branch, model, mtime: st.mtimeMs, sizeBytes: st.size,
+    awaitingInput: computeAwaitingInput(entries),
     truncated: st.size > MAX, count: timeline.length, timeline,
   };
 }

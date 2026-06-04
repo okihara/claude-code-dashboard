@@ -216,14 +216,14 @@ const fmtAge = (ms) => {
 const esc = (s) => String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 const shortModel = (m) => m ? m.replace(/^claude-/, '').replace(/-\d{8}$/, '') : null;
 
-// Claude が返答し終え、ユーザーの返信を待っている状態か
-const isAwaiting = (s) => s.lastRole === 'assistant' && s.status === 'idle';
+// AskUserQuestion でユーザーの回答待ちになっている状態か
+const isAwaiting = (s) => !!s.awaitingInput;
 
 function card(s) {
   const live = s.status === 'active';
   const awaiting = isAwaiting(s);
   const badges = [];
-  if (awaiting) badges.push(`<span class="badge await">⌛ 返信待ち</span>`);
+  if (awaiting) badges.push(`<span class="badge await">⌛ 回答待ち</span>`);
   if (s.gitBranch) badges.push(`<span class="badge branch">⎇ ${esc(s.gitBranch)}</span>`);
   if (s.model) badges.push(`<span class="badge model">${esc(shortModel(s.model))}</span>`);
   if (s.messageCount != null) badges.push(`<span class="badge">${s.messageCount} msg</span>`);
@@ -262,7 +262,7 @@ async function tick() {
     const awaitingCount = sessions.filter(isAwaiting).length;
     document.getElementById('stats').innerHTML = [
       `<span class="pill"><span class="dot active"></span>稼働中 <b>${c.active||0}</b></span>`,
-      awaitingCount ? `<span class="pill"><span class="dot await"></span>返信待ち <b>${awaitingCount}</b></span>` : '',
+      awaitingCount ? `<span class="pill"><span class="dot await"></span>回答待ち <b>${awaitingCount}</b></span>` : '',
       `<span class="pill"><span class="dot idle"></span>待機中 <b>${c.idle||0}</b></span>`,
       `<span class="pill"><span class="dot dormant"></span>休眠 <b>${c.dormant||0}</b></span>`,
       `<span class="pill">⚙ プロセス <b>${c.processes||0}</b></span>`,
@@ -338,10 +338,7 @@ async function showDetail(project, id, silent = false) {
 
     document.getElementById('mtitle').textContent = d.title || id.slice(0, 8);
     const badges = [];
-    const lastTurn = d.timeline && d.timeline.length ? d.timeline[d.timeline.length - 1] : null;
-    if (lastTurn && lastTurn.role === 'assistant' && statusByKey[skey(project, id)] === 'idle') {
-      badges.push(`<span class="badge await">⌛ 返信待ち</span>`);
-    }
+    if (d.awaitingInput) badges.push(`<span class="badge await">⌛ 回答待ち</span>`);
     if (d.gitBranch) badges.push(`<span class="badge branch">⎇ ${esc(d.gitBranch)}</span>`);
     if (d.model) badges.push(`<span class="badge model">${esc(shortModel(d.model))}</span>`);
     badges.push(`<span class="badge">${d.count} turns</span>`);
