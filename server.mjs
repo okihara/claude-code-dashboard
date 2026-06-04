@@ -184,6 +184,71 @@ function analyzeSession(projectName, file) {
   return base;
 }
 
+// ---- 1セッションの会話タイムラインを取得 ----
+function buildSessionDetail(projectName, sessionId) {
+  const full = path.join(PROJECTS_DIR, projectName, sessionId + '.jsonl');
+  let st;
+  try { st = statSync(full); } catch { return null; }
+
+  // 詳細表示は全文読む（大きすぎる場合は末尾2MBに制限）
+  const MAX = 2 * 1024 * 1024;
+  let text;
+  if (st.size > MAX) {
+    const fd = openSync(full, 'r');
+    try {
+      const buf = Buffer.alloc(MAX);
+      readSync(fd, buf, 0, MAX, st.size - MAX);
+      text = buf.toString('utf8');
+    } finally { closeSync(fd); }
+  } else {
+    text = readFileSync(full, 'utf8');
+  }
+  const entries = parseLines(text);
+
+  let title = null, cwd = null, branch = null, model = null;
+  const timeline = [];
+  for (const e of entries) {
+    if (e.type === 'ai-title' && e.aiTitle) title = e.aiTitle;
+    if (e.cwd) cwd = e.cwd;
+    if (e.gitBranch) branch = e.gitBranch;
+    const m = e.message;
+    if (!m || typeof m !== 'object') continue;
+    if (m.model) model = m.model;
+    if (e.type !== 'user' && e.type !== 'assistant') continue;
+    if (m.role !== 'user' && m.role !== 'assistant') continue;
+
+    const blocks = [];
+    const c = m.content;
+    if (typeof c === 'string') {
+      if (c.trim()) blocks.push({ kind: 'text', text: c });
+    } else if (Array.isArray(c)) {
+      for (const b of c) {
+        if (!b || typeof b !== 'object') continue;
+        if (b.type === 'text' && b.text) blocks.push({ kind: 'text', text: b.text });
+        else if (b.type === 'thinking') blocks.push({ kind: 'thinking', text: b.thinking || '' });
+        else if (b.type === 'tool_use') {
+          let arg = '';
+          try { arg = JSON.stringify(b.input); } catch {}
+          blocks.push({ kind: 'tool_use', name: b.name || 'tool', input: (arg || '').slice(0, 1200) });
+        } else if (b.type === 'tool_result') {
+          let r = b.content;
+          if (Array.isArray(r)) r = r.map((x) => (x && x.text) ? x.text : (typeof x === 'string' ? x : '')).join('\n');
+          if (typeof r !== 'string') { try { r = JSON.stringify(r); } catch { r = ''; } }
+          blocks.push({ kind: 'tool_result', text: (r || '').slice(0, 1500), isError: !!b.is_error });
+        }
+      }
+    }
+    if (!blocks.length) continue;
+    timeline.push({ role: m.role, timestamp: e.timestamp || null, blocks });
+  }
+
+  return {
+    sessionId, project: projectName, projectPath: decodeProjectDir(projectName),
+    title, cwd, gitBranch: branch, model, mtime: st.mtimeMs, sizeBytes: st.size,
+    truncated: st.size > MAX, count: timeline.length, timeline,
+  };
+}
+
 async function buildSnapshot() {
   let projectDirs = [];
   try {
@@ -241,6 +306,29 @@ const server = http.createServer(async (req, res) => {
       const snap = await buildSnapshot();
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify(snap));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: String(e) }));
+    }
+    return;
+  }
+  if (url.pathname === '/api/session') {
+    const project = url.searchParams.get('project');
+    const id = url.searchParams.get('id');
+    if (!project || !id || /[\/\\]/.test(project) || /[\/\\.]/.test(id)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'project と id が必要です' }));
+      return;
+    }
+    try {
+      const detail = buildSessionDetail(project, id);
+      if (!detail) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'セッションが見つかりません' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(detail));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: String(e) }));

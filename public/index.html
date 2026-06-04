@@ -76,7 +76,44 @@
   }
   .last .role { color: var(--dim); }
   .pathline { font-size: 11px; color: var(--dim); margin-top: 8px; word-break: break-all; }
+  .card { cursor: pointer; }
+  .card:active { transform: scale(.995); }
   .empty { color: var(--muted); text-align: center; padding: 40px; }
+
+  /* モーダル */
+  .overlay {
+    position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.6);
+    display: none; align-items: stretch; justify-content: flex-end;
+  }
+  .overlay.open { display: flex; }
+  .modal {
+    width: min(760px, 100%); background: var(--bg); border-left: 1px solid var(--border);
+    display: flex; flex-direction: column; height: 100%; box-shadow: -8px 0 30px rgba(0,0,0,.4);
+    animation: slidein .18s ease;
+  }
+  @keyframes slidein { from { transform: translateX(30px); opacity: .4; } to { transform: none; opacity: 1; } }
+  .modal-head { padding: 14px 18px; border-bottom: 1px solid var(--border); background: var(--panel); }
+  .modal-head .row { display: flex; align-items: center; gap: 10px; }
+  .modal-head .mtitle { font-weight: 650; font-size: 15px; flex: 1; word-break: break-word; }
+  .modal-head .close { cursor: pointer; color: var(--muted); font-size: 22px; line-height: 1; padding: 0 4px; }
+  .modal-head .close:hover { color: var(--text); }
+  .modal-head .badges { margin: 8px 0 0; }
+  .modal-head .mpath { font-size: 11px; color: var(--dim); margin-top: 6px; word-break: break-all; }
+  .modal-body { overflow-y: auto; padding: 14px 18px 40px; flex: 1; }
+  .turn { margin-bottom: 14px; }
+  .turn .who { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--dim); margin-bottom: 4px; display: flex; gap: 8px; }
+  .turn.user .who { color: var(--accent); }
+  .turn.assistant .who { color: #7ee787; }
+  .turn .ts { color: var(--dim); letter-spacing: 0; text-transform: none; }
+  .blk { border-radius: 7px; padding: 9px 12px; margin-bottom: 6px; white-space: pre-wrap; word-break: break-word; font-size: 13px; }
+  .blk.text { background: var(--panel); border: 1px solid var(--border); }
+  .turn.user .blk.text { background: #15233a; border-color: #1f3a5f; }
+  .blk.thinking { background: transparent; border: 1px dashed var(--border); color: var(--muted); font-style: italic; font-size: 12px; }
+  .blk.tool_use { background: #1a2030; border: 1px solid #2a3a52; color: #79c0ff; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  .blk.tool_use .tname { color: #ffa657; font-weight: 600; }
+  .blk.tool_result { background: #11161e; border: 1px solid var(--border); color: var(--muted); font-family: ui-monospace, Menlo, monospace; font-size: 12px; max-height: 220px; overflow: auto; }
+  .blk.tool_result.err { border-color: #8b3030; color: #ffb3b3; }
+  .loading { color: var(--muted); text-align: center; padding: 40px; }
   .err { background: #3d1d1d; border: 1px solid #8b3030; color: #ffb3b3; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; }
   a { color: inherit; }
 </style>
@@ -93,6 +130,20 @@
   <div id="err"></div>
   <div id="content"></div>
 </main>
+
+<div class="overlay" id="overlay">
+  <div class="modal" id="modal">
+    <div class="modal-head">
+      <div class="row">
+        <div class="mtitle" id="mtitle">—</div>
+        <div class="close" id="closeBtn" title="閉じる (Esc)">×</div>
+      </div>
+      <div class="badges" id="mbadges"></div>
+      <div class="mpath" id="mpath"></div>
+    </div>
+    <div class="modal-body" id="mbody"></div>
+  </div>
+</div>
 
 <script>
 const REFRESH_MS = 3000;
@@ -120,7 +171,7 @@ function card(s) {
   if (live) badges.push(`<span class="badge live">● LIVE</span>`);
 
   const projName = s.project.replace(/^-Users-[^-]+-/, '').replace(/^-/, '');
-  let html = `<div class="card ${s.status}">`;
+  let html = `<div class="card ${s.status}" data-project="${esc(s.project)}" data-id="${esc(s.sessionId)}">`;
   html += `<div class="card-top"><span class="proj">${esc(projName)}</span><span class="age">${fmtAge(s.ageMs)}</span></div>`;
   if (s.title) html += `<div class="title"><span class="label">タイトル: </span>${esc(s.title)}</div>`;
   if (badges.length) html += `<div class="badges">${badges.join('')}</div>`;
@@ -176,6 +227,64 @@ async function tick() {
 document.getElementById('hideDormant').addEventListener('change', (e) => {
   hideDormant = e.target.checked; tick();
 });
+
+// ===== 詳細モーダル =====
+const overlay = document.getElementById('overlay');
+function closeModal() { overlay.classList.remove('open'); }
+function openModal() { overlay.classList.add('open'); }
+
+document.getElementById('content').addEventListener('click', (e) => {
+  const card = e.target.closest('.card');
+  if (!card) return;
+  showDetail(card.dataset.project, card.dataset.id);
+});
+document.getElementById('closeBtn').addEventListener('click', closeModal);
+overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+
+function renderBlocks(blocks) {
+  return blocks.map(b => {
+    if (b.kind === 'text') return `<div class="blk text">${esc(b.text)}</div>`;
+    if (b.kind === 'thinking') return `<div class="blk thinking">💭 ${esc(b.text || '(thinking)')}</div>`;
+    if (b.kind === 'tool_use') return `<div class="blk tool_use">🔧 <span class="tname">${esc(b.name)}</span> ${esc(b.input || '')}</div>`;
+    if (b.kind === 'tool_result') return `<div class="blk tool_result${b.isError?' err':''}">↩︎ ${esc(b.text || '')}</div>`;
+    return '';
+  }).join('');
+}
+
+async function showDetail(project, id) {
+  openModal();
+  document.getElementById('mtitle').textContent = '読み込み中…';
+  document.getElementById('mbadges').innerHTML = '';
+  document.getElementById('mpath').textContent = '';
+  const body = document.getElementById('mbody');
+  body.innerHTML = '<div class="loading">読み込み中…</div>';
+  try {
+    const r = await fetch(`/api/session?project=${encodeURIComponent(project)}&id=${encodeURIComponent(id)}`);
+    const d = await r.json();
+    if (d.error) { body.innerHTML = `<div class="err">${esc(d.error)}</div>`; return; }
+
+    document.getElementById('mtitle').textContent = d.title || id.slice(0, 8);
+    const badges = [];
+    if (d.gitBranch) badges.push(`<span class="badge branch">⎇ ${esc(d.gitBranch)}</span>`);
+    if (d.model) badges.push(`<span class="badge model">${esc(shortModel(d.model))}</span>`);
+    badges.push(`<span class="badge">${d.count} turns</span>`);
+    if (d.truncated) badges.push(`<span class="badge resumed">末尾のみ表示</span>`);
+    document.getElementById('mbadges').innerHTML = badges.join('');
+    document.getElementById('mpath').textContent = (d.cwd || d.projectPath || '') + '  ·  ' + id;
+
+    if (!d.timeline.length) { body.innerHTML = '<div class="empty">表示できる会話がありません</div>'; return; }
+    body.innerHTML = d.timeline.map(t => {
+      const ts = t.timestamp ? new Date(t.timestamp).toLocaleString('ja-JP') : '';
+      const who = t.role === 'user' ? '👤 ユーザー' : '🤖 Claude';
+      return `<div class="turn ${t.role}"><div class="who">${who}<span class="ts">${esc(ts)}</span></div>${renderBlocks(t.blocks)}</div>`;
+    }).join('');
+    body.scrollTop = body.scrollHeight;
+  } catch (e) {
+    body.innerHTML = `<div class="err">取得エラー: ${esc(e)}</div>`;
+  }
+}
+
 tick();
 setInterval(tick, REFRESH_MS);
 </script>
