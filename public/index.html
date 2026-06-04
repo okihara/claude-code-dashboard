@@ -9,7 +9,7 @@
     --bg: #0d1117; --panel: #161b22; --panel2: #1c2230; --border: #2a3038;
     --text: #e6edf3; --muted: #8b949e; --dim: #6e7681;
     --active: #3fb950; --idle: #d29922; --dormant: #6e7681;
-    --accent: #58a6ff;
+    --accent: #58a6ff; --await: #f778ba;
     --leftw: 200px; --listw: 960px; --headerh: 57px;
   }
   * { box-sizing: border-box; }
@@ -75,6 +75,9 @@
   .card:hover { border-color: #3d4654; }
   .card:active { transform: scale(.995); }
   .card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .card.awaiting { border-color: rgba(247,120,186,.5); background: linear-gradient(180deg, rgba(247,120,186,.06), transparent 60%); }
+  .card.awaiting::before { background: var(--await); }
+  .card.awaiting.selected { box-shadow: 0 0 0 1px var(--accent); }
   .card-top { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
   .proj { font-weight: 650; color: var(--accent); font-size: 14px; word-break: break-all; }
   .age { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -86,6 +89,9 @@
   .badge.model { color: #79c0ff; }
   .badge.live { color: var(--active); border-color: rgba(63,185,80,.4); }
   .badge.resumed { color: #ffa657; }
+  .badge.await { color: var(--await); border-color: rgba(247,120,186,.45); background: rgba(247,120,186,.1); font-weight: 600; animation: awaitpulse 1.8s ease-in-out infinite; }
+  @keyframes awaitpulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+  .dot.await { background: var(--await); }
   .prompt {
     background: var(--panel2); border-radius: 6px; padding: 8px 10px; font-size: 12.5px;
     color: var(--text); margin-bottom: 7px; border-left: 2px solid var(--accent);
@@ -210,9 +216,14 @@ const fmtAge = (ms) => {
 const esc = (s) => String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 const shortModel = (m) => m ? m.replace(/^claude-/, '').replace(/-\d{8}$/, '') : null;
 
+// Claude が返答し終え、ユーザーの返信を待っている状態か
+const isAwaiting = (s) => s.lastRole === 'assistant' && s.status === 'idle';
+
 function card(s) {
   const live = s.status === 'active';
+  const awaiting = isAwaiting(s);
   const badges = [];
+  if (awaiting) badges.push(`<span class="badge await">⌛ 返信待ち</span>`);
   if (s.gitBranch) badges.push(`<span class="badge branch">⎇ ${esc(s.gitBranch)}</span>`);
   if (s.model) badges.push(`<span class="badge model">${esc(shortModel(s.model))}</span>`);
   if (s.messageCount != null) badges.push(`<span class="badge">${s.messageCount} msg</span>`);
@@ -221,7 +232,7 @@ function card(s) {
 
   const projName = s.project.replace(/^-Users-[^-]+-/, '').replace(/^-/, '');
   const sel = (openDetail && openDetail.project === s.project && openDetail.id === s.sessionId) ? ' selected' : '';
-  let html = `<div class="card ${s.status}${sel}" data-project="${esc(s.project)}" data-id="${esc(s.sessionId)}">`;
+  let html = `<div class="card ${s.status}${awaiting ? ' awaiting' : ''}${sel}" data-project="${esc(s.project)}" data-id="${esc(s.sessionId)}">`;
   html += `<div class="card-top"><span class="proj">${esc(projName)}</span><span class="age">${fmtAge(s.ageMs)}</span></div>`;
   if (s.title) html += `<div class="title"><span class="label">タイトル: </span>${esc(s.title)}</div>`;
   if (badges.length) html += `<div class="badges">${badges.join('')}</div>`;
@@ -247,14 +258,16 @@ async function tick() {
     errEl.innerHTML = d.error ? `<div class="err">${esc(d.error)}</div>` : '';
 
     const c = d.counts || {};
+    const sessions = d.sessions || [];
+    const awaitingCount = sessions.filter(isAwaiting).length;
     document.getElementById('stats').innerHTML = [
       `<span class="pill"><span class="dot active"></span>稼働中 <b>${c.active||0}</b></span>`,
+      awaitingCount ? `<span class="pill"><span class="dot await"></span>返信待ち <b>${awaitingCount}</b></span>` : '',
       `<span class="pill"><span class="dot idle"></span>待機中 <b>${c.idle||0}</b></span>`,
       `<span class="pill"><span class="dot dormant"></span>休眠 <b>${c.dormant||0}</b></span>`,
       `<span class="pill">⚙ プロセス <b>${c.processes||0}</b></span>`,
     ].join('');
 
-    const sessions = d.sessions || [];
     for (const s of sessions) statusByKey[skey(s.project, s.sessionId)] = s.status;
     if (openDetail) updateComposer();
     const active = sessions.filter(s => s.status === 'active');
@@ -325,6 +338,10 @@ async function showDetail(project, id, silent = false) {
 
     document.getElementById('mtitle').textContent = d.title || id.slice(0, 8);
     const badges = [];
+    const lastTurn = d.timeline && d.timeline.length ? d.timeline[d.timeline.length - 1] : null;
+    if (lastTurn && lastTurn.role === 'assistant' && statusByKey[skey(project, id)] === 'idle') {
+      badges.push(`<span class="badge await">⌛ 返信待ち</span>`);
+    }
     if (d.gitBranch) badges.push(`<span class="badge branch">⎇ ${esc(d.gitBranch)}</span>`);
     if (d.model) badges.push(`<span class="badge model">${esc(shortModel(d.model))}</span>`);
     badges.push(`<span class="badge">${d.count} turns</span>`);
