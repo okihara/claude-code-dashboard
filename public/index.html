@@ -148,6 +148,7 @@
 <script>
 const REFRESH_MS = 3000;
 let hideDormant = false;
+let openDetail = null; // モーダル表示中の { project, id }
 
 const fmtAge = (ms) => {
   const s = Math.floor(ms / 1000);
@@ -230,7 +231,7 @@ document.getElementById('hideDormant').addEventListener('change', (e) => {
 
 // ===== 詳細モーダル =====
 const overlay = document.getElementById('overlay');
-function closeModal() { overlay.classList.remove('open'); }
+function closeModal() { overlay.classList.remove('open'); openDetail = null; }
 function openModal() { overlay.classList.add('open'); }
 
 document.getElementById('content').addEventListener('click', (e) => {
@@ -252,17 +253,25 @@ function renderBlocks(blocks) {
   }).join('');
 }
 
-async function showDetail(project, id) {
-  openModal();
-  document.getElementById('mtitle').textContent = '読み込み中…';
-  document.getElementById('mbadges').innerHTML = '';
-  document.getElementById('mpath').textContent = '';
+async function showDetail(project, id, silent = false) {
+  openDetail = { project, id };
   const body = document.getElementById('mbody');
-  body.innerHTML = '<div class="loading">読み込み中…</div>';
+  if (!silent) {
+    openModal();
+    document.getElementById('mtitle').textContent = '読み込み中…';
+    document.getElementById('mbadges').innerHTML = '';
+    document.getElementById('mpath').textContent = '';
+    body.innerHTML = '<div class="loading">読み込み中…</div>';
+  }
+  // 自動更新時はスクロール位置を保持。最下部付近を見ているなら最新に追従。
+  const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
+  const prevTop = body.scrollTop;
   try {
     const r = await fetch(`/api/session?project=${encodeURIComponent(project)}&id=${encodeURIComponent(id)}`);
     const d = await r.json();
-    if (d.error) { body.innerHTML = `<div class="err">${esc(d.error)}</div>`; return; }
+    // 取得中に別セッションを開いた/閉じた場合は破棄
+    if (!openDetail || openDetail.project !== project || openDetail.id !== id) return;
+    if (d.error) { if (!silent) body.innerHTML = `<div class="err">${esc(d.error)}</div>`; return; }
 
     document.getElementById('mtitle').textContent = d.title || id.slice(0, 8);
     const badges = [];
@@ -279,14 +288,17 @@ async function showDetail(project, id) {
       const who = t.role === 'user' ? '👤 ユーザー' : '🤖 Claude';
       return `<div class="turn ${t.role}"><div class="who">${who}<span class="ts">${esc(ts)}</span></div>${renderBlocks(t.blocks)}</div>`;
     }).join('');
-    body.scrollTop = body.scrollHeight;
+    // 初回表示・最下部追従なら末尾へ、それ以外は元のスクロール位置を維持
+    body.scrollTop = (silent && !atBottom) ? prevTop : body.scrollHeight;
   } catch (e) {
-    body.innerHTML = `<div class="err">取得エラー: ${esc(e)}</div>`;
+    if (!silent) body.innerHTML = `<div class="err">取得エラー: ${esc(e)}</div>`;
   }
 }
 
 tick();
 setInterval(tick, REFRESH_MS);
+// モーダルを開いている間は詳細も同じ間隔で自動更新（サイレント）
+setInterval(() => { if (openDetail) showDetail(openDetail.project, openDetail.id, true); }, REFRESH_MS);
 </script>
 </body>
 </html>
